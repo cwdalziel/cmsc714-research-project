@@ -39,13 +39,13 @@ for PLATFORM in "$PLATFORM_DIR"/*.xml; do
     printf "  %-20s ... " "$TOPOLOGY"
     OUTPUT=$(smpirun -np "$NP" \
                      -platform "$PLATFORM" \
-                     --cfg=smpi/host-speed:auto \
+                     --cfg=smpi/host-speed:8Gf \
                      --cfg=smpi/display-timing:yes \
                      --cfg=smpi/coll-selector:ompi \
                      "$BINARY" 2>&1)
 
     # Extract the timing line from the output
-    TIME=$(echo "$OUTPUT" | grep -oP '[\d.]+ s' | head -1 | grep -oP '[\d.]+')
+    TIME=$(echo "$OUTPUT" | grep -oP '[\d.e+-]+(?= s)' | tail -1)
 
     if [ -z "$TIME" ]; then
         echo "FAILED"
