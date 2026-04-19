@@ -39,8 +39,7 @@ for PLATFORM in "$PLATFORM_DIR"/*.xml; do
     printf "  %-20s ... " "$TOPOLOGY"
     OUTPUT=$(smpirun -np "$NP" \
                      -platform "$PLATFORM" \
-                     --cfg=smpi/host-speed:8Gf \
-                     --cfg=smpi/display-timing:yes \
+                     --cfg=smpi/host-speed:auto \
                      --cfg=smpi/coll-selector:ompi \
                      "$BINARY" 2>&1)
 
