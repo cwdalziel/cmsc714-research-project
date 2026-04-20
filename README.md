@@ -1,10 +1,14 @@
 # CMSC 714 Research Project
 
 ## simgrid install: 
+Use the latest version of SimGrid on Linux
+Source:
+https://github.com/simgrid/simgrid/releases/download/v4.1/simgrid-4.1.tar.gz
 
-`
-sudo apt install libsimgrid-dev
-`
+Install:
+https://simgrid.org/doc/latest/Installing_SimGrid.html#installing-from-source
+
+
 
 ## simgrid docs:
 
