@@ -1,0 +1,17 @@
+<!-- 16 nodes -->
+<?xml version='1.0'?>
+<!DOCTYPE platform SYSTEM "https://simgrid.org/simgrid.dtd">
+<platform version="4.1">
+  <zone id="world" routing="Full">
+    <cluster id="dragonfly_cluster"
+             prefix="node-" radical="0-15" suffix=".simgrid.org"
+             speed="100Gf"
+             bw="12.5GBps"
+             lat="1us"
+             topology="DRAGONFLY"
+             topo_parameters="2,2;2,2;2,1;2"
+             loopback_bw="100GBps"
+             loopback_lat="0ns"
+             limiter_link="12.5GBps"/>
+  </zone>
+</platform>

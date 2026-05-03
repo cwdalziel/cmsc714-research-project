@@ -1,0 +1,86 @@
+<?xml version='1.0'?>
+<!DOCTYPE platform SYSTEM "https://simgrid.org/simgrid.dtd">
+<platform version="4.1">
+  <zone id="world" routing="Floyd">
+    <host id="node-0.simgrid.org" speed="100Gf"/>
+    <host id="node-1.simgrid.org" speed="100Gf"/>
+    <host id="node-2.simgrid.org" speed="100Gf"/>
+    <host id="node-3.simgrid.org" speed="100Gf"/>
+    <host id="node-4.simgrid.org" speed="100Gf"/>
+    <host id="node-5.simgrid.org" speed="100Gf"/>
+    <host id="node-6.simgrid.org" speed="100Gf"/>
+    <host id="node-7.simgrid.org" speed="100Gf"/>
+    <host id="node-8.simgrid.org" speed="100Gf"/>
+    <host id="node-9.simgrid.org" speed="100Gf"/>
+    <host id="node-10.simgrid.org" speed="100Gf"/>
+    <host id="node-11.simgrid.org" speed="100Gf"/>
+    <host id="node-12.simgrid.org" speed="100Gf"/>
+    <host id="node-13.simgrid.org" speed="100Gf"/>
+    <host id="node-14.simgrid.org" speed="100Gf"/>
+    <host id="node-15.simgrid.org" speed="100Gf"/>
+    <link id="link-0-1" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-1-2" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-2-3" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-3-4" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-4-5" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-5-6" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-6-7" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-7-8" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-8-9" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-9-10" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-10-11" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-11-12" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-12-13" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-13-14" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-14-15" bandwidth="12.5GBps" latency="1us"/>
+    <link id="link-15-0" bandwidth="12.5GBps" latency="1us"/>
+    <route src="node-0.simgrid.org" dst="node-1.simgrid.org">
+      <link_ctn id="link-0-1"/>
+    </route>
+    <route src="node-1.simgrid.org" dst="node-2.simgrid.org">
+      <link_ctn id="link-1-2"/>
+    </route>
+    <route src="node-2.simgrid.org" dst="node-3.simgrid.org">
+      <link_ctn id="link-2-3"/>
+    </route>
+    <route src="node-3.simgrid.org" dst="node-4.simgrid.org">
+      <link_ctn id="link-3-4"/>
+    </route>
+    <route src="node-4.simgrid.org" dst="node-5.simgrid.org">
+      <link_ctn id="link-4-5"/>
+    </route>
+    <route src="node-5.simgrid.org" dst="node-6.simgrid.org">
+      <link_ctn id="link-5-6"/>
+    </route>
+    <route src="node-6.simgrid.org" dst="node-7.simgrid.org">
+      <link_ctn id="link-6-7"/>
+    </route>
+    <route src="node-7.simgrid.org" dst="node-8.simgrid.org">
+      <link_ctn id="link-7-8"/>
+    </route>
+    <route src="node-8.simgrid.org" dst="node-9.simgrid.org">
+      <link_ctn id="link-8-9"/>
+    </route>
+    <route src="node-9.simgrid.org" dst="node-10.simgrid.org">
+      <link_ctn id="link-9-10"/>
+    </route>
+    <route src="node-10.simgrid.org" dst="node-11.simgrid.org">
+      <link_ctn id="link-10-11"/>
+    </route>
+    <route src="node-11.simgrid.org" dst="node-12.simgrid.org">
+      <link_ctn id="link-11-12"/>
+    </route>
+    <route src="node-12.simgrid.org" dst="node-13.simgrid.org">
+      <link_ctn id="link-12-13"/>
+    </route>
+    <route src="node-13.simgrid.org" dst="node-14.simgrid.org">
+      <link_ctn id="link-13-14"/>
+    </route>
+    <route src="node-14.simgrid.org" dst="node-15.simgrid.org">
+      <link_ctn id="link-14-15"/>
+    </route>
+    <route src="node-15.simgrid.org" dst="node-0.simgrid.org">
+      <link_ctn id="link-15-0"/>
+    </route>
+  </zone>
+</platform>

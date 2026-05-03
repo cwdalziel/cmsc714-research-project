@@ -21,7 +21,8 @@ mpi specifically: https://simgrid.org/doc/latest/Tutorial_MPI_Applications.html
 compile with `smpicxx` or `smpicc` and run with `smpirun` which takes the same args as `mpirun` but with `-platform example.xml` to use network topology defined in xml file
 
 ## run_benchmarks example usage (after running make)
+64 = number of nodes
 
 `
-./run_benchmarks.sh bin/alltoall
+./run_benchmarks.sh bin/alltoall 64
 `

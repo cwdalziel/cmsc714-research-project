@@ -1,25 +1,24 @@
 #!/bin/bash
 
-# Usage: ./run_benchmarks.sh <binary>
-# Example: ./run_benchmarks.sh bin/alltoall
+# Usage: ./run_benchmarks.sh <binary> <np>
+# Example: ./run_benchmarks.sh bin/stencil 64
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 <binary>"
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Usage: $0 <binary> <np>"
     exit 1
 fi
-FLOPS=
-BINARY=$1
-NP=64
-PLATFORM_DIR=platforms
-RESULTS_DIR=results
 
-# Validate binary exists
+BINARY=$1
+NP=$2
+FLOPS=1Gf
+PLATFORM_DIR=platforms/$NP   # look for platform files for this node count
+RESULTS_DIR=results/$NP      # separate results folder per node count
+
 if [ ! -f "$BINARY" ]; then
     echo "Error: binary '$BINARY' not found"
     exit 1
 fi
 
-# Validate platform directory exists
 if [ ! -d "$PLATFORM_DIR" ]; then
     echo "Error: platform directory '$PLATFORM_DIR' not found"
     exit 1
@@ -43,7 +42,6 @@ for PLATFORM in "$PLATFORM_DIR"/*.xml; do
                      --cfg=smpi/coll-selector:ompi \
                      "$BINARY" 2>&1)
 
-    # Extract the timing line from the output
     TIME=$(echo "$OUTPUT" | grep -oP '[\d.e+-]+(?= s)' | tail -1)
 
     if [ -z "$TIME" ]; then
