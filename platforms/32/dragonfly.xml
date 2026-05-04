@@ -9,7 +9,7 @@
              bw="12.5GBps"
              lat="1us"
              topology="DRAGONFLY"
-             topo_parameters="4,2;2,2;2,1;2"
+             topo_parameters="2,2;2,2;2,1;4"
              loopback_bw="100GBps"
              loopback_lat="0ns"
              limiter_link="12.5GBps"/>

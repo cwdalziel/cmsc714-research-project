@@ -19,5 +19,8 @@ $(BINDIR)/%: $(SRCDIR)/%.cpp
 clean-all:
 	rm -rf $(BINDIR) $(RESDIR)
 
+clean-results:
+	rm -rf $(RESDIR)
+
 clean:
 	rm -rf $(BINDIR)
