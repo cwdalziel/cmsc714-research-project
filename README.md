@@ -1,7 +1,25 @@
 # CMSC 714 Research Project
 
-## simgrid install: 
-Use the latest version of SimGrid on Linux
+## Local setup (Docker — recommended)
+
+The repo ships a `Dockerfile` that builds an Ubuntu 22.04 image with SimGrid
+4.1 + FFTW + the C++ build chain pre-installed. This is the supported way to
+develop on macOS/Windows; native Linux users can also use it for
+toolchain/version consistency across teammates.
+
+```
+make docker-build   # one-time, ~10 min
+make docker-shell   # drop into a shell, repo mounted at /work
+make docker-make    # one-shot: run `make` inside the container
+```
+
+Inside `docker-shell`, `make` builds binaries and `./run_benchmarks.sh ...`
+runs them as documented below — `smpicxx` and `smpirun` are on the container
+PATH. Re-run `make docker-build` only when the `Dockerfile` itself changes.
+
+## SimGrid install (native, if not using Docker)
+
+Use the latest version of SimGrid on Linux.
 Source:
 https://github.com/simgrid/simgrid/releases/download/v4.1/simgrid-4.1.tar.gz
 

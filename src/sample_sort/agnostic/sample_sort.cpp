@@ -1,4 +1,4 @@
-// Topology-agnostic sample sort over MPI.
+// Topology-agnostic sample sort over MPI (regular-sampling PSRS variant).
 // Owner: Sonok Mahapatra (CMSC 714 group project).
 //
 // Pipeline (see ../DESIGN.md for full rationale):
@@ -9,7 +9,7 @@
 //   5. partition local data by splitters -> send_counts[p]
 //   6. alltoall send_counts -> recv_counts
 //   7. alltoallv to redistribute the data itself
-//   8. local sort/merge of received bucket
+//   8. local sort of received bucket
 //
 // Usage: see print_usage() below or run with --help.
 
@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -42,7 +43,6 @@ static void print_usage(const char* prog) {
       "  -h, --help       Print this help and exit.\n";
 }
 
-// If `s` starts with `prefix`, fills `value` with the suffix and returns true.
 static bool starts_with(const std::string& s, const char* prefix, std::string& value) {
     size_t plen = std::strlen(prefix);
     if (s.size() < plen || s.compare(0, plen, prefix) != 0) return false;
@@ -58,8 +58,8 @@ int main(int argc, char* argv[]) {
 
     // ---- Argument parsing ----
     long long total_N    = (1LL << 24);
-    long long per_rank_N = -1;     // sentinel: not set
-    uint64_t  seed       = 0;      // 0 = derive from rank
+    long long per_rank_N = -1;
+    uint64_t  seed       = 0;
     bool      verify     = false;
     bool      saw_pos_N  = false;
 
@@ -103,6 +103,15 @@ int main(int argc, char* argv[]) {
     }
     long long local_n = total_N / p;
 
+    // PSRS requires local_n >= p so we can pick p-1 distinct sample positions
+    // strictly above index 0. Below that the sampling math degenerates.
+    if (local_n < p) {
+        if (rank == 0)
+            std::cerr << "Error: local_n (" << local_n << ") must be >= ranks ("
+                      << p << "). Increase TOTAL_N.\n";
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
     // ---- Generate input data (reproducible per (seed, rank)) ----
     uint64_t rng_seed = seed
         ? (seed ^ (static_cast<uint64_t>(rank) * 0x9E3779B97F4A7C15ULL))
@@ -115,52 +124,69 @@ int main(int argc, char* argv[]) {
     double t_start = MPI_Wtime();
 
     // ===== STEP 1: local sort =====
-    // TODO: std::sort(local.begin(), local.end());
+    std::sort(local.begin(), local.end());
 
-    // ===== STEP 2: regular sample (pick p-1 samples) =====
-    std::vector<Key> samples;  // size should end up as p-1
-    // TODO: indices to sample at: i * local_n / p for i = 1 .. p-1.
+    // ===== STEP 2: regular sample (p-1 samples at evenly-spaced positions) =====
+    std::vector<Key> samples(p - 1);
+    for (int i = 0; i < p - 1; i++) {
+        samples[i] = local[(i + 1) * local_n / p];
+    }
 
-    // ===== STEP 3: allgather samples =====
+    // ===== STEP 3: allgather samples (every rank ends up with p*(p-1) samples) =====
     std::vector<Key> all_samples(static_cast<size_t>(p) * (p - 1));
-    // TODO: MPI_Allgather(samples.data(), p - 1, MPI_KEY,
-    //                     all_samples.data(), p - 1, MPI_KEY,
-    //                     MPI_COMM_WORLD);
+    MPI_Allgather(samples.data(),     p - 1, MPI_KEY,
+                  all_samples.data(), p - 1, MPI_KEY,
+                  MPI_COMM_WORLD);
 
     // ===== STEP 4: pick p-1 global splitters =====
-    std::vector<Key> splitters;  // size p-1
-    // TODO: std::sort(all_samples.begin(), all_samples.end());
-    //       splitters[i] = all_samples[(i+1) * p - 1] for i = 0..p-2
-    //       (one valid evenly-spaced rule — see DESIGN.md).
+    std::sort(all_samples.begin(), all_samples.end());
+    std::vector<Key> splitters(p - 1);
+    for (int i = 0; i < p - 1; i++) {
+        splitters[i] = all_samples[(i + 1) * p - 1];
+    }
 
     // ===== STEP 5: partition local data by splitters =====
+    // bucket i = keys in [splitters[i-1], splitters[i]); bucket 0 = (-inf, splitters[0]);
+    // bucket p-1 = [splitters[p-2], +inf). Use lower_bound on the (sorted) local array.
     std::vector<int> send_counts(p, 0);
     std::vector<int> send_displs(p, 0);
-    // TODO: walk `local` (or use std::lower_bound on `splitters`) and fill
-    //       send_counts[i] = # of local keys whose target rank is i.
-    //       send_displs[i] = exclusive prefix sum of send_counts.
+    {
+        long long prev = 0;
+        for (int i = 0; i < p - 1; i++) {
+            auto it = std::lower_bound(local.begin() + prev, local.end(), splitters[i]);
+            long long next = it - local.begin();
+            send_counts[i] = static_cast<int>(next - prev);
+            send_displs[i] = static_cast<int>(prev);
+            prev = next;
+        }
+        send_counts[p - 1] = static_cast<int>(local_n - prev);
+        send_displs[p - 1] = static_cast<int>(prev);
+    }
 
-    // ===== STEP 6: exchange counts =====
+    // ===== STEP 6: exchange counts so every rank knows how much it'll receive =====
     std::vector<int> recv_counts(p, 0);
-    // TODO: MPI_Alltoall(send_counts.data(), 1, MPI_INT,
-    //                    recv_counts.data(), 1, MPI_INT,
-    //                    MPI_COMM_WORLD);
+    MPI_Alltoall(send_counts.data(), 1, MPI_INT,
+                 recv_counts.data(), 1, MPI_INT,
+                 MPI_COMM_WORLD);
 
     // ===== STEP 7: redistribute via Alltoallv =====
     std::vector<int> recv_displs(p, 0);
-    long long recv_total = 0;
-    std::vector<Key> received;
-    // TODO: build recv_displs (exclusive prefix sum of recv_counts);
-    //       recv_total = sum of recv_counts; received.resize(recv_total);
-    //       MPI_Alltoallv(local.data(),    send_counts.data(), send_displs.data(), MPI_KEY,
-    //                     received.data(), recv_counts.data(), recv_displs.data(), MPI_KEY,
-    //                     MPI_COMM_WORLD);
+    long long recv_total = recv_counts[0];
+    for (int i = 1; i < p; i++) {
+        recv_displs[i] = recv_displs[i - 1] + recv_counts[i - 1];
+        recv_total += recv_counts[i];
+    }
+    std::vector<Key> received(static_cast<size_t>(recv_total));
+    MPI_Alltoallv(local.data(),    send_counts.data(), send_displs.data(), MPI_KEY,
+                  received.data(), recv_counts.data(), recv_displs.data(), MPI_KEY,
+                  MPI_COMM_WORLD);
 
-    // ===== STEP 8: local sort/merge of received bucket =====
-    // TODO: std::sort(received.begin(), received.end());
-    //       (Each contiguous chunk is already sorted; in-place k-way merge
-    //        would be faster. Defer.)
+    // ===== STEP 8: local sort of received bucket =====
+    // (Each contiguous chunk in `received` arrived already sorted, so a k-way
+    //  merge would be asymptotically better. Defer that optimization.)
+    std::sort(received.begin(), received.end());
 
+    MPI_Barrier(MPI_COMM_WORLD);
     double t_end = MPI_Wtime();
 
     if (rank == 0)
@@ -168,13 +194,54 @@ int main(int argc, char* argv[]) {
 
     // ---- Optional verification (does not count toward timing) ----
     if (verify) {
-        // TODO: implement.
-        //   1. Check `received` is locally sorted.
-        //   2. Send received.front() to rank-1 and received.back() to rank+1
-        //      via MPI_Sendrecv; check rank r's max <= rank r+1's min.
-        //   3. Check sum of recv_counts across all ranks equals total_N.
-        // Print "VERIFY: ok" or "VERIFY: FAIL: <reason>" on rank 0.
-        if (rank == 0) std::cerr << "VERIFY: not yet implemented\n";
+        // (1) Each rank's bucket is locally sorted.
+        int local_ok = std::is_sorted(received.begin(), received.end()) ? 1 : 0;
+        int all_local_ok = 0;
+        MPI_Reduce(&local_ok, &all_local_ok, 1, MPI_INT, MPI_LAND, 0, MPI_COMM_WORLD);
+
+        // (2) Cross-rank monotonicity: gather (min, max, has_data) per rank to 0.
+        Key my_min = received.empty() ? std::numeric_limits<Key>::max()
+                                      : received.front();
+        Key my_max = received.empty() ? std::numeric_limits<Key>::min()
+                                      : received.back();
+        int has_data = received.empty() ? 0 : 1;
+
+        std::vector<Key> all_mins, all_maxs;
+        std::vector<int> all_has;
+        if (rank == 0) {
+            all_mins.resize(p);
+            all_maxs.resize(p);
+            all_has.resize(p);
+        }
+        MPI_Gather(&my_min,   1, MPI_KEY, all_mins.data(), 1, MPI_KEY, 0, MPI_COMM_WORLD);
+        MPI_Gather(&my_max,   1, MPI_KEY, all_maxs.data(), 1, MPI_KEY, 0, MPI_COMM_WORLD);
+        MPI_Gather(&has_data, 1, MPI_INT, all_has.data(),  1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        // (3) Total count preserved.
+        long long my_count = static_cast<long long>(received.size());
+        long long total_count = 0;
+        MPI_Reduce(&my_count, &total_count, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+        if (rank == 0) {
+            bool monotonic = true;
+            Key last_max = std::numeric_limits<Key>::min();
+            bool seen = false;
+            for (int r = 0; r < p; r++) {
+                if (!all_has[r]) continue;
+                if (seen && last_max > all_mins[r]) { monotonic = false; break; }
+                last_max = all_maxs[r];
+                seen = true;
+            }
+            bool count_ok = (total_count == total_N);
+            if (all_local_ok && monotonic && count_ok) {
+                std::cerr << "VERIFY: ok\n";
+            } else {
+                std::cerr << "VERIFY: FAIL  local_sorted=" << all_local_ok
+                          << "  monotonic=" << monotonic
+                          << "  total_count=" << total_count
+                          << "  expected=" << total_N << "\n";
+            }
+        }
     }
 
     MPI_Finalize();

@@ -24,3 +24,17 @@ clean-results:
 
 clean:
 	rm -rf $(BINDIR)
+
+# ---- Docker (consistent Linux + SimGrid env for all teammates) ----
+DOCKER_IMAGE = cmsc714
+
+.PHONY: docker-build docker-shell docker-make
+
+docker-build:
+	docker build -t $(DOCKER_IMAGE) .
+
+docker-shell:
+	docker run -it --rm -v "$(CURDIR):/work" -w /work $(DOCKER_IMAGE) bash
+
+docker-make:
+	docker run --rm -v "$(CURDIR):/work" -w /work $(DOCKER_IMAGE) make

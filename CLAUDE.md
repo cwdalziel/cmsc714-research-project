@@ -24,6 +24,22 @@ under `bin/`. Toolchain is hard-wired:
 - `LDFLAGS = -lfftw3 -lfftw3_mpi -lm` (FFTW3 + FFTW3-MPI required even though only `2d_fft_mpi.cpp`
   uses them; every binary links them)
 
+### Local environment (Docker)
+
+The team runs SimGrid locally, not on a shared cluster. The repo's `Dockerfile`
+provides Ubuntu 22.04 + SimGrid 4.1 + FFTW; this is the supported macOS/Windows path
+and the recommended path on Linux for toolchain consistency:
+
+```
+make docker-build   # one-time, ~10 min (builds SimGrid from source inside the image)
+make docker-shell   # interactive shell inside the container, repo mounted at /work
+make docker-make    # one-shot: run `make` inside the container
+```
+
+`smpicxx` and `smpirun` are only available inside the container. Editor diagnostics on
+the host (clang not finding `mpi.h`) are expected noise — actual builds happen via
+`make` inside `docker-shell` (or via `make docker-make`).
+
 ## Run a single benchmark
 
 ```

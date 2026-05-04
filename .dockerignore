@@ -1,0 +1,8 @@
+.git
+.gitignore
+bin
+results
+.vscode
+.cursor
+.DS_Store
+*.csv
