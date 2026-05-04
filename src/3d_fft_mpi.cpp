@@ -12,24 +12,47 @@
 #include <math.h>
 #include <mpi.h>
 #include <fftw3.h>
-
-/* Initialize 3D data */
-static void init_data_3d(fftw_complex *buf, int local_slices, int N)
+#include <iomanip>
+#include <iostream>
+/* Initialize 3D data on rank 0 */
+/* x is the slowest varying dimension, then z then y, row major format*/
+static void init_data_3d(fftw_complex *buf, int N)
 {
-    for (int s = 0; s < local_slices; s++)
-        for (int r = 0; r < N; r++)
-            for (int c = 0; c < N; c++) {
-                int idx = (s * N + r) * N + c;
-                buf[idx][0] = sin(2.0 * M_PI * r / N) * cos(2.0 * M_PI * c / N);
+    for (int x = 0; x < N; x++)
+        for (int z = 0; z < N; z++)
+            for (int y = 0; y < N; y++) {
+                int idx = (x * N + z) * N + y;
+                // buf[idx][0] = sin(2.0 * M_PI * z / N) * cos(2.0 * M_PI * y / N);
+                // buf[idx][1] = 0.0;
+                buf[idx][0] = idx;
                 buf[idx][1] = 0.0;
             }
 }
 
-/* 1D FFT along X-axis (innermost dimension) */
+void print3dMatrix(fftw_complex *buf, int N, int local_slices)
+{
+    for (int x = 0; x < local_slices; x++) {
+        std::cout << "Slice x=" << x << ":\n";
+        for (int z = 0; z < N; z++) {
+            std::cout << " [ ";
+            for (int y = 0; y < N; y++) {
+                int idx = (x * N + z) * N + y;
+                std::cout << std::setw(4) << buf[idx][0] << " ";    
+            }
+            std::cout << " ]" << std::endl;
+        }
+        std::cout << std::endl;
+    }
+}
+
+/* 1D FFT along Y-axis on slabs */
 static void fft_x_axis(fftw_complex *data, int local_slices, int N)
 {
+    int rank = 1;
+    int howmany = local_slices * N;
+
     fftw_plan plan = fftw_plan_many_dft(
-        1, &N, local_slices * N,  /* N elements, repeated */
+        1, &N, local_slices * N, 
         data, NULL, 1, N,
         data, NULL, 1, N,
         FFTW_FORWARD, FFTW_ESTIMATE);
@@ -54,7 +77,7 @@ static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
                                    int local_slices, int N, int P,
                                    MPI_Comm comm)
 {
-    int total_size = local_slices * N * N;
+    int total_size = N * N * N;
     fftw_complex *send_buf = (fftw_complex *)fftw_malloc(total_size * sizeof(fftw_complex));
     fftw_complex *recv_buf = (fftw_complex *)fftw_malloc(total_size * sizeof(fftw_complex));
 
@@ -90,12 +113,29 @@ int main(int argc, char **argv)
     }
 
     int local_slices = N / P;
-    size_t local_size = (size_t)local_slices * N * N;
+    size_t local_size = sizeof(fftw_complex) * local_slices * N * N;
 
-    fftw_complex *data = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
-    fftw_complex *temp = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    fftw_complex *data = (fftw_complex *)fftw_malloc(local_size);
+    fftw_complex *temp = (fftw_complex *)fftw_malloc(local_size);
 
-    init_data_3d(data, local_slices, N);
+    fftw_complex *cube;
+    if(rank == 0){
+        int total_size = N * N * N;
+        cube = (fftw_complex *)fftw_malloc(total_size * sizeof(fftw_complex));
+        printf("Initializing data on rank 0...\n");
+        init_data_3d(cube, N);
+        print3dMatrix(cube, N,N);
+        printf("Scattering data to all ranks...\n");
+        
+    }
+    MPI_Scatter(cube, local_size, MPI_BYTE, data, local_size, MPI_BYTE, 0, MPI_COMM_WORLD);
+    
+    fftw_free(cube);
+    
+    if(rank == 0){
+        printf("Data after scattering (local slice on rank 0):\n");
+        print3dMatrix(data, N, local_slices);
+    }
 
     MPI_Barrier(MPI_COMM_WORLD);
     double t_start = MPI_Wtime();
@@ -127,6 +167,7 @@ int main(int argc, char **argv)
 
     /* For verification, perform inverse FFT  */
     if (rank == 0){
+        printf("Performing inverse FFT for verification...\n");
     fftw_plan plan_inv = fftw_plan_dft_3d(N, N, N, data, data, FFTW_BACKWARD, FFTW_ESTIMATE);
     fftw_execute(plan_inv);
     fftw_destroy_plan(plan_inv);
