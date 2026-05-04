@@ -110,6 +110,7 @@ int main(int argc, char **argv)
     fft_y_axis(temp, local_slices, N);
 
     /* Stage 4: All-to-all transpose 2 */
+    /* */
     transpose_alltoall_3d(temp, data, local_slices, N, P, MPI_COMM_WORLD);
 
     /* Stage 5: FFT along Z (outermost dimension) */
@@ -123,6 +124,26 @@ int main(int argc, char **argv)
 
     MPI_Barrier(MPI_COMM_WORLD);
     double t_end = MPI_Wtime();
+
+    /* For verification, perform inverse FFT  */
+    if (rank == 0){
+    fftw_plan plan_inv = fftw_plan_dft_3d(N, N, N, data, data, FFTW_BACKWARD, FFTW_ESTIMATE);
+    fftw_execute(plan_inv);
+    fftw_destroy_plan(plan_inv);
+
+    /* Scale by 1/N³ */
+    double scale = 1.0 / (N * N * N);
+    for (size_t i = 0; i < local_size; i++) {
+        data[i][0] *= scale;
+        data[i][1] *= scale;
+    }
+
+    /* Compare with initial data */
+    double error = 0.0;
+    for (size_t i = 0; i < local_size; i++) {
+        error += pow(data[i][0], 2) + pow(data[i][1], 2);
+    }
+    }
 
     if (rank == 0) {
         printf("=== 3D FFT MPI Results ===\n");
