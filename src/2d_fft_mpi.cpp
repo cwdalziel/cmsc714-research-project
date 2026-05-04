@@ -120,7 +120,7 @@ int main(int argc, char **argv)
     MPI_Comm_size(MPI_COMM_WORLD, &P);
 
     /* Matrix size N x N.  N must be divisible by P. */
-    int N = (argc > 1) ? atoi(argv[1]) : 1024;
+    int N = (argc > 1) ? atoi(argv[1]) : 16384;
 
     if (N % P != 0) {
         if (rank == 0)
