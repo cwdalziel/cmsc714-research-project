@@ -348,6 +348,67 @@ static void alltoall_hypercube(fftw_complex *in, fftw_complex *out,
     fftw_free(recv_buf);
 }
 
+static void alltoall_fattree(fftw_complex *in, fftw_complex *out,
+                             int local_size, int count_per_rank, int P, int rank,
+                             MPI_Comm comm)
+{
+    MPI_Alltoall(in,  count_per_rank * 2, MPI_DOUBLE,
+                 out, count_per_rank * 2, MPI_DOUBLE,
+                 comm);
+}
+
+
+static void alltoall_torus(fftw_complex *in, fftw_complex *out,
+                           int local_size, int count_per_rank, int P, int rank,
+                           MPI_Comm comm)
+{
+    // For 16 nodes: decompose as 4x4 mesh (matching 2x2x4 torus)
+    // This is topology-specific; in practice, query MPI for actual dimensions
+    
+    int P1 = 4, P2 = 4;  // For 16 nodes
+    if (P == 8) { P1 = 2; P2 = 4; }      // For 8 nodes
+    if (P == 32) { P1 = 4; P2 = 8; }     // For 32 nodes
+    if (P == 64) { P1 = 8; P2 = 8; }     // For 64 nodes
+    if (P == 128) { P1 = 8; P2 = 16; }   // For 128 nodes
+    
+    int rank1 = rank / P2;
+    int rank2 = rank % P2;
+    
+    fftw_complex *temp_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    // After dim1 alltoall, block at position i within comm1 belongs to
+	// global rank (i * P2 + rank2). Repack to global order for dim2 pass.
+	for (int i = 0; i < P1; i++) {
+	    int global_src = i * P2 + rank2;
+	    memcpy(temp_buf + global_src * count_per_rank,
+		   out + i * count_per_rank,
+		   count_per_rank * sizeof(fftw_complex));
+	}
+    
+    // Step 1: All-to-all along dimension 1 (fix rank2, vary rank1)
+    {
+        MPI_Comm comm1;
+        MPI_Comm_split(comm, rank2, rank1, &comm1);
+        MPI_Alltoall(temp_buf, count_per_rank * 2, MPI_DOUBLE,
+                     out, count_per_rank * 2, MPI_DOUBLE,
+                     comm1);
+        MPI_Comm_free(&comm1);
+    }
+    
+    memcpy(temp_buf, out, local_size * sizeof(fftw_complex));
+    
+    // Step 2: All-to-all along dimension 2 (fix rank1, vary rank2)
+    {
+        MPI_Comm comm2;
+        MPI_Comm_split(comm, rank1, rank2, &comm2);
+        MPI_Alltoall(temp_buf, count_per_rank * 2, MPI_DOUBLE,
+                     out, count_per_rank * 2, MPI_DOUBLE,
+                     comm2);
+        MPI_Comm_free(&comm2);
+    }
+    
+    fftw_free(temp_buf);
+}
+
 /* Topology selector - dispatches to appropriate implementation
  * Set TOPOLOGY_STRATEGY environment variable or detect from platform file
  */
@@ -409,14 +470,14 @@ static void transpose_alltoall_3d_optimized(fftw_complex *in, fftw_complex *out,
             if (rank == 0) printf("Using HYPERCUBE topology strategy increased latency but decreased traffic\n");
             alltoall_hypercube(in, out, local_size, count_per_rank, P, rank, comm);
             break;
-        // case TOPOLOGY_FATTREE:
-        //     if (rank == 0) printf("[Optimization] Using FAT-TREE topology strategy\n");
-        //     alltoall_fattree(in, out, local_size, count_per_rank, P, rank, comm);
-        //     break;
-        // case TOPOLOGY_TORUS:
-        //     if (rank == 0) printf("[Optimization] Using TORUS topology strategy\n");
-        //     alltoall_torus(in, out, local_size, count_per_rank, P, rank, comm);
-        //     break;
+        case TOPOLOGY_FATTREE:
+            if (rank == 0) printf("[Optimization] Using FAT-TREE topology strategy\n");
+            alltoall_fattree(in, out, local_size, count_per_rank, P, rank, comm);
+            break;
+        case TOPOLOGY_TORUS:
+            if (rank == 0) printf("[Optimization] Using TORUS topology strategy\n");
+            alltoall_torus(in, out, local_size, count_per_rank, P, rank, comm);
+            break;
         // case TOPOLOGY_DRAGONFLY:
         //     if (rank == 0) printf("[Optimization] Using DRAGONFLY topology strategy\n");
         //     alltoall_dragonfly(in, out, local_size, count_per_rank, P, rank, comm);
