@@ -184,16 +184,24 @@ int main(int argc, char **argv)
     #endif
     MPI_Barrier(MPI_COMM_WORLD);
     double t_start = MPI_Wtime();
-
+    double fft_time = 0.0;
+    double comm_time = 0.0;
+    double intl_transpose_time = 0.0;
     // /* Stage 1: FFT along Y for slices */
     #ifdef DEBUG
     printf("Rank %d: Starting FFT along Y\n", rank);
     fflush(stdout);
     #endif
+    double fft_start = MPI_Wtime();
     fft_1d_slices(data, fft1out, local_slices, N);
+    fft_time  += MPI_Wtime() - fft_start;
+    double tr_start_time = MPI_Wtime();
     transpose_local_yz(fft1out, data_t, local_slices, N);
+    intl_transpose_time += MPI_Wtime() - tr_start_time;
     // printf("FFT along y done on rank %d, now doing FFT along x for transposed slices...\n", rank);
+    fft_start = MPI_Wtime();
     fft_1d_slices(data_t, fft2out, local_slices, N);
+    fft_time += MPI_Wtime() - fft_start;
 
     // printf("FFT along y and z done on rank %d, now doing all-to-all transpose...\n", rank);
     /* 2D fft for each slice in each rank is done, now do the all to all transpose.*/
@@ -201,10 +209,15 @@ int main(int argc, char **argv)
     //     print3dMatrix(data, N, local_slices);
     //     print3dMatrix(data_t, N, local_slices);
     // }
+    tr_start_time = MPI_Wtime();
     transpose_local_yz(fft2out, data_t, local_slices, N);
+    intl_transpose_time += MPI_Wtime() - tr_start_time;
+
     fftw_complex *recvd = (fftw_complex *)fftw_malloc(local_size);
     MPI_Barrier(MPI_COMM_WORLD);
+    double t_comm_start = MPI_Wtime();
     transpose_alltoall_3d(data_t, recvd, local_slices, N, P, MPI_COMM_WORLD);
+    comm_time += MPI_Wtime() - t_comm_start;
     #ifdef DEBUG
     printf("All-to-all transpose done on rank %d, now doing FFT along x for transposed slices...\n", rank);
     #endif
@@ -214,13 +227,19 @@ int main(int argc, char **argv)
     // }
     //Do the 1D fft along the x axis for the transposed data in slices.
     fftw_complex *fft3out = (fftw_complex *)fftw_malloc(local_size);
+    fft_start = MPI_Wtime();
     fft_1d_slices(recvd,fft3out, local_slices, N);
+    fft_time += MPI_Wtime() - fft_start;
+    double t_end = MPI_Wtime();
+    
 
     #ifdef DEBUG
     printf("FFT along x done on rank %d, now doing inverse all-to-all transpose to restore original distribution...\n", rank);
     /* Inverse all-to-all transpose - using self-inverse block-based redistribution */
     fftw_complex *data_restored = (fftw_complex *)fftw_malloc(local_size);
+    t_comm_start = MPI_Wtime();
     transpose_alltoall_3d(fft3out, data_restored, local_slices, N, P, MPI_COMM_WORLD);
+    
     
     /* Compute output energy for verification using Parseval's theorem */
     double local_output_energy = 0.0;
@@ -241,7 +260,7 @@ int main(int argc, char **argv)
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
-    double t_end = MPI_Wtime();
+    
 
     /* Gather all data to rank 0 for verification */
     fftw_complex *full_data = NULL;
@@ -249,19 +268,34 @@ int main(int argc, char **argv)
         full_data = (fftw_complex *)fftw_malloc(N * N * N * sizeof(fftw_complex));
 
     int num_elements = local_slices * N * N;
-        MPI_Gather(data_restored, num_elements, MPI_C_COMPLEX,
-           full_data, num_elements, MPI_C_COMPLEX,
-           0, MPI_COMM_WORLD);
+    MPI_Gather(data_restored, num_elements, MPI_C_COMPLEX,
+               full_data, num_elements, MPI_C_COMPLEX,
+               0, MPI_COMM_WORLD);
+
+    /* Calculate RMS magnitude of output */
+    double local_rms_mag_sq = 0.0;
+    for (int i = 0; i < local_slices * N * N; i++) {
+        double mag_sq = data_restored[i][0] * data_restored[i][0] + data_restored[i][1] * data_restored[i][1];
+        local_rms_mag_sq += mag_sq;
+    }
+    
+    double global_rms_mag_sq = 0.0;
+    MPI_Allreduce(&local_rms_mag_sq, &global_rms_mag_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    double rms_magnitude = sqrt(global_rms_mag_sq / (N * N * N));
+
+    fftw_free(data_restored);
+    #endif
 
     if (rank == 0) {
         printf("FFT computation complete. Energy verification via Parseval's theorem shown above.\n");
         printf("=== 3D FFT MPI Results ===\n");
         printf("N=%d (N³=%d), P=%d\n", N, N*N*N, P);
         printf("Total time: %.6f s\n", t_end - t_start);
-        fftw_free(full_data);
-    }
-    fftw_free(data_restored);
-    #endif
+        printf("FFT compute time: %.6f s\n", fft_time);
+        printf("Alltoall comm: %.6f s\n", comm_time);
+        printf("Internal transpose time: %.6f s\n", intl_transpose_time);
+        // printf("RMS magnitude: %.6e\n", rms_magnitude);
+}
 
     
     fftw_free(data);
