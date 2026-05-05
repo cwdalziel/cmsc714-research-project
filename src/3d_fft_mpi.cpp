@@ -61,16 +61,30 @@ static void fft_x_axis(fftw_complex *data, int local_slices, int N)
 }
 
 /* 1D FFT along Y-axis (middle dimension) */
-static void fft_y_axis(fftw_complex *data, int local_slices, int N)
+static void fft_1d_slices(fftw_complex *data, int local_slices, int N)
 {
     fftw_plan plan = fftw_plan_many_dft(
         1, &N, local_slices * N,
-        data, NULL, N, 1,
-        data, NULL, N, 1,
+        data, NULL, 1, N,
+        data, NULL, 1, N,
         FFTW_FORWARD, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
 }
+
+/* tanspose slices Y and Z dimensions locally   */
+static void transpose_local_yz(fftw_complex *in, fftw_complex *out, int local_slices, int N)
+{
+    for (int x = 0; x < local_slices; x++)
+        for (int z = 0; z < N; z++)
+            for (int y = 0; y < N; y++) {
+                int in_idx = (x * N + z) * N + y;
+                int out_idx = (x * N + y) * N + z;
+                out[out_idx][0] = in[in_idx][0];
+                out[out_idx][1] = in[in_idx][1];
+            }
+}
+
 
 /* All-to-all transpose for 3D (exchange slabs between processes) */
 static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
@@ -116,7 +130,7 @@ int main(int argc, char **argv)
     size_t local_size = sizeof(fftw_complex) * local_slices * N * N;
 
     fftw_complex *data = (fftw_complex *)fftw_malloc(local_size);
-    fftw_complex *temp = (fftw_complex *)fftw_malloc(local_size);
+    fftw_complex *data_t = (fftw_complex *)fftw_malloc(local_size);     //transposed slices in slices
 
     fftw_complex *cube;
     if(rank == 0){
@@ -134,17 +148,22 @@ int main(int argc, char **argv)
         fftw_free(cube);
     }
     
-    if(rank == 15){
-        printf("Data after scattering (local slice on rank 0):\n");
-        print3dMatrix(data, N, local_slices);
-    }
+    // if(rank == 1){
+    //     printf("Data after scattering (local slice on rank 0):\n");
+    //     print3dMatrix(data, N, local_slices);
+    // }
 
     MPI_Barrier(MPI_COMM_WORLD);
-    // double t_start = MPI_Wtime();
+    double t_start = MPI_Wtime();
 
-    // /* Stage 1: FFT along X */
-    // fft_x_axis(data, local_slices, N);
+    // /* Stage 1: FFT along Y for slices */
+    // fft_1d_slices(data, local_slices, N);
+    transpose_local_yz(data, data_t, local_slices, N);
 
+    if(rank == 0){
+        print3dMatrix(data, N, local_slices);
+        print3dMatrix(data_t, N, local_slices);
+    }
     // /* Stage 2: All-to-all transpose */
     // transpose_alltoall_3d(data, temp, local_slices, N, P, MPI_COMM_WORLD);
 
@@ -195,7 +214,7 @@ int main(int argc, char **argv)
     // }
 
     fftw_free(data);
-    fftw_free(temp);
+    fftw_free(data_t);
 
     MPI_Finalize();
     return 0;
