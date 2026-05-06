@@ -15,6 +15,12 @@
 #include <iomanip>
 #include <iostream>
 
+/* Timing structure for all-to-all functions */
+struct AlltoallTiming {
+    double mpi_time;    /* Time spent in actual MPI calls */
+    double memcpy_time; /* Time spent in memcpy operations */
+};
+
   // Enable debug prints for small N
 /* Initialize 3D data on rank 0 */
 /* x is the slowest varying dimension, then z then y, row major format*/
@@ -93,7 +99,7 @@ static void transpose_local_yz(fftw_complex *in, fftw_complex *out, int local_sl
  */
 static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
                                    int local_slices, int N, int P,
-                                   MPI_Comm comm)
+                                   MPI_Comm comm, AlltoallTiming *timing)
 {
     int local_size = local_slices * N * N;
     int count_per_rank = local_size / P;
@@ -102,6 +108,7 @@ static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
     fftw_complex *recv_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
 
     /* Simple block-based packing: send block i to rank i (self-inverse) */
+    double memcpy_start = MPI_Wtime();
     for (int dest_rank = 0; dest_rank < P; dest_rank++) {
         int block_start = dest_rank * count_per_rank;
         for (int i = 0; i < count_per_rank; i++) {
@@ -109,12 +116,17 @@ static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
             send_buf[dest_rank * count_per_rank + i][1] = in[block_start + i][1];
         }
     }
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
 
+    double mpi_start = MPI_Wtime();
     MPI_Alltoall(send_buf, count_per_rank * 2, MPI_DOUBLE,
                  recv_buf, count_per_rank * 2, MPI_DOUBLE,
                  comm);
+    timing->mpi_time += MPI_Wtime() - mpi_start;
 
+    memcpy_start = MPI_Wtime();
     memcpy(out, recv_buf, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
 
     fftw_free(send_buf);
     fftw_free(recv_buf);
@@ -142,10 +154,12 @@ static void transpose_alltoall_3d(fftw_complex *in, fftw_complex *out,
  */
 static void alltoall_recursive_doubling(fftw_complex *in, fftw_complex *out,
                                         int local_size, int count_per_rank, int P, int rank,
-                                        MPI_Comm comm)
+                                        MPI_Comm comm, AlltoallTiming *timing)
 {
     fftw_complex *data = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    double memcpy_start = MPI_Wtime();
     memcpy(data, in, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     fftw_complex *temp_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
     
@@ -155,14 +169,17 @@ static void alltoall_recursive_doubling(fftw_complex *in, fftw_complex *out,
         
         if (partner < P) {
             /* Exchange entire current data buffer with partner */
+            double mpi_start = MPI_Wtime();
             MPI_Sendrecv(data, local_size, MPI_C_COMPLEX, partner, stage,
                          temp_buf, local_size, MPI_C_COMPLEX, partner, stage,
                          comm, MPI_STATUS_IGNORE);
+            timing->mpi_time += MPI_Wtime() - mpi_start;
             
             /* Merge received data - interleave based on XOR pattern */
             /* Rank with lower XOR bit keeps lower chunks, gets higher from partner */
             int bit_value = (rank >> stage) & 1;
             
+            memcpy_start = MPI_Wtime();
             if (bit_value == 0) {
                 /* Lower half: keep our lower half, replace upper half with partner's */
                 memcpy(data + (local_size / 2), 
@@ -174,10 +191,14 @@ static void alltoall_recursive_doubling(fftw_complex *in, fftw_complex *out,
                        temp_buf, 
                        (local_size / 2) * sizeof(fftw_complex));
             }
+            timing->memcpy_time += MPI_Wtime() - memcpy_start;
         }
     }
     
+    memcpy_start = MPI_Wtime();
     memcpy(out, data, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
+    
     fftw_free(data);
     fftw_free(temp_buf);
 }
@@ -206,14 +227,16 @@ static void alltoall_recursive_doubling(fftw_complex *in, fftw_complex *out,
  */
 static void alltoall_naive(fftw_complex *in, fftw_complex *out,
                            int local_size, int count_per_rank, int P, int rank,
-                           MPI_Comm comm)
+                           MPI_Comm comm, AlltoallTiming *timing)
 {
     fftw_complex *send_buf = (fftw_complex *)fftw_malloc(count_per_rank * sizeof(fftw_complex));
     fftw_complex *recv_buf = (fftw_complex *)fftw_malloc(count_per_rank * sizeof(fftw_complex));
     
     /* Organize input data: in[block i] contains data destined for rank i */
     fftw_complex *all_data = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    double memcpy_start = MPI_Wtime();
     memcpy(all_data, in, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     /* Initialize output to hold received data */
     fftw_complex *all_output = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
@@ -227,22 +250,30 @@ static void alltoall_naive(fftw_complex *in, fftw_complex *out,
         /* Prepare send data: block that should go to dest_rank */
         int send_block_idx = dest_rank;
         int send_offset = send_block_idx * count_per_rank;
+        memcpy_start = MPI_Wtime();
         memcpy(send_buf, all_data + send_offset, count_per_rank * sizeof(fftw_complex));
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
         
         /* Exchange data with specific pair */
+        double mpi_start = MPI_Wtime();
         MPI_Sendrecv(send_buf, count_per_rank * 2, MPI_DOUBLE,
                      dest_rank, stage,
                      recv_buf, count_per_rank * 2, MPI_DOUBLE,
                      src_rank, stage,
                      comm, MPI_STATUS_IGNORE);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         
         /* Store received data in correct output position */
         int recv_block_idx = src_rank;
         int recv_offset = recv_block_idx * count_per_rank;
+        memcpy_start = MPI_Wtime();
         memcpy(all_output + recv_offset, recv_buf, count_per_rank * sizeof(fftw_complex));
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
     }
     
+    memcpy_start = MPI_Wtime();
     memcpy(out, all_output, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     fftw_free(send_buf);
     fftw_free(recv_buf);
@@ -252,7 +283,7 @@ static void alltoall_naive(fftw_complex *in, fftw_complex *out,
 
 static void alltoall_ring(fftw_complex *in, fftw_complex *out,
                           int local_size, int count_per_rank, int P, int rank,
-                          MPI_Comm comm)
+                          MPI_Comm comm, AlltoallTiming *timing)
 {
     /* The ring algorithm must compute the EXACT SAME permutation as the naive staged version
      * so that calling it twice (forward and inverse) restores original data.
@@ -269,7 +300,9 @@ static void alltoall_ring(fftw_complex *in, fftw_complex *out,
     
     /* Copy input to temporary buffer for gathering data */
     fftw_complex *all_data = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    double memcpy_start = MPI_Wtime();
     memcpy(all_data, in, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     fftw_complex *all_output = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
     memset(all_output, 0, local_size * sizeof(fftw_complex));
@@ -282,20 +315,29 @@ static void alltoall_ring(fftw_complex *in, fftw_complex *out,
         /* Send the block designated for dest_rank */
         int send_block_idx = dest_rank;
         int send_offset = send_block_idx * count_per_rank;
+        memcpy_start = MPI_Wtime();
         memcpy(send_buf, all_data + send_offset, count_per_rank * sizeof(fftw_complex));
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
         
         /* Exchange with appropriate partner */
+        double mpi_start = MPI_Wtime();
         MPI_Sendrecv(send_buf, count_per_rank * 2, MPI_DOUBLE, dest_rank, stage,
                      recv_buf, count_per_rank * 2, MPI_DOUBLE, src_rank, stage,
                      comm, MPI_STATUS_IGNORE);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         
         /* Receive goes to position src_rank in output (same as naive) */
         int recv_block_idx = src_rank;
         int recv_offset = recv_block_idx * count_per_rank;
+        memcpy_start = MPI_Wtime();
         memcpy(all_output + recv_offset, recv_buf, count_per_rank * sizeof(fftw_complex));
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
     }
     
+    memcpy_start = MPI_Wtime();
     memcpy(out, all_output, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
+    
     fftw_free(send_buf);
     fftw_free(recv_buf);
     fftw_free(all_data);
@@ -304,13 +346,15 @@ static void alltoall_ring(fftw_complex *in, fftw_complex *out,
 
 static void alltoall_hypercube(fftw_complex *in, fftw_complex *out,
                                int local_size, int count_per_rank, int P, int rank,
-                               MPI_Comm comm)
+                               MPI_Comm comm, AlltoallTiming *timing)
 {
     fftw_complex *send_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
     fftw_complex *recv_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
     fftw_complex *exchange_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
 
+    double memcpy_start = MPI_Wtime();
     memcpy(send_buf, in, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
 
     int num_steps = 0;
     int temp = P;
@@ -321,10 +365,13 @@ static void alltoall_hypercube(fftw_complex *in, fftw_complex *out,
         int low_mask = (1 << (step + 1)) - 1;   // bits 0..step
         int partner  = rank ^ mask;
 
+        double mpi_start = MPI_Wtime();
         MPI_Sendrecv(send_buf,    local_size * 2, MPI_DOUBLE, partner, step,
                      exchange_buf, local_size * 2, MPI_DOUBLE, partner, step,
                      comm, MPI_STATUS_IGNORE);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
 
+        memcpy_start = MPI_Wtime();
         for (int i = 0; i < P; i++) {
             if ((i & low_mask) == (rank & low_mask)) {
                 // Block i belongs to our "neighborhood" — keep our copy
@@ -338,11 +385,17 @@ static void alltoall_hypercube(fftw_complex *in, fftw_complex *out,
                        count_per_rank * sizeof(fftw_complex));
             }
         }
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
 
+        memcpy_start = MPI_Wtime();
         memcpy(send_buf, recv_buf, local_size * sizeof(fftw_complex));
+        timing->memcpy_time += MPI_Wtime() - memcpy_start;
     }
 
+    memcpy_start = MPI_Wtime();
     memcpy(out, send_buf, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
+    
     fftw_free(exchange_buf);
     fftw_free(send_buf);
     fftw_free(recv_buf);
@@ -350,17 +403,19 @@ static void alltoall_hypercube(fftw_complex *in, fftw_complex *out,
 
 static void alltoall_fattree(fftw_complex *in, fftw_complex *out,
                              int local_size, int count_per_rank, int P, int rank,
-                             MPI_Comm comm)
+                             MPI_Comm comm, AlltoallTiming *timing)
 {
+    double mpi_start = MPI_Wtime();
     MPI_Alltoall(in,  count_per_rank * 2, MPI_DOUBLE,
                  out, count_per_rank * 2, MPI_DOUBLE,
                  comm);
+    timing->mpi_time += MPI_Wtime() - mpi_start;
 }
 
 
 static void alltoall_torus(fftw_complex *in, fftw_complex *out,
                            int local_size, int count_per_rank, int P, int rank,
-                           MPI_Comm comm)
+                           MPI_Comm comm, AlltoallTiming *timing)
 {
     // For 16 nodes: decompose as 4x4 mesh (matching 2x2x4 torus)
     // This is topology-specific; in practice, query MPI for actual dimensions
@@ -375,39 +430,150 @@ static void alltoall_torus(fftw_complex *in, fftw_complex *out,
     int rank2 = rank % P2;
     
     fftw_complex *temp_buf = (fftw_complex *)fftw_malloc(local_size * sizeof(fftw_complex));
+    
     // After dim1 alltoall, block at position i within comm1 belongs to
-	// global rank (i * P2 + rank2). Repack to global order for dim2 pass.
-	for (int i = 0; i < P1; i++) {
-	    int global_src = i * P2 + rank2;
-	    memcpy(temp_buf + global_src * count_per_rank,
-		   out + i * count_per_rank,
-		   count_per_rank * sizeof(fftw_complex));
-	}
+    // global rank (i * P2 + rank2). Repack to global order for dim2 pass.
+    double memcpy_start = MPI_Wtime();
+    for (int i = 0; i < P1; i++) {
+        int global_src = i * P2 + rank2;
+        memcpy(temp_buf + global_src * count_per_rank,
+               out + i * count_per_rank,
+               count_per_rank * sizeof(fftw_complex));
+    }
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     // Step 1: All-to-all along dimension 1 (fix rank2, vary rank1)
     {
         MPI_Comm comm1;
         MPI_Comm_split(comm, rank2, rank1, &comm1);
+        double mpi_start = MPI_Wtime();
         MPI_Alltoall(temp_buf, count_per_rank * 2, MPI_DOUBLE,
                      out, count_per_rank * 2, MPI_DOUBLE,
                      comm1);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         MPI_Comm_free(&comm1);
     }
     
+    memcpy_start = MPI_Wtime();
     memcpy(temp_buf, out, local_size * sizeof(fftw_complex));
+    timing->memcpy_time += MPI_Wtime() - memcpy_start;
     
     // Step 2: All-to-all along dimension 2 (fix rank1, vary rank2)
     {
         MPI_Comm comm2;
         MPI_Comm_split(comm, rank1, rank2, &comm2);
+        double mpi_start = MPI_Wtime();
         MPI_Alltoall(temp_buf, count_per_rank * 2, MPI_DOUBLE,
                      out, count_per_rank * 2, MPI_DOUBLE,
                      comm2);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         MPI_Comm_free(&comm2);
     }
     
     fftw_free(temp_buf);
 }
+
+static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
+                                        int local_size, int count_per_rank, int P, int rank,
+                                        MPI_Comm comm)
+{
+    int groups          = (int)round(sqrt((double)P));
+    int nodes_per_group = P / groups;
+
+    int my_group   = rank / nodes_per_group;
+    int local_rank = rank % nodes_per_group;
+
+    /* Each rank is responsible for forwarding data to one destination group.
+       Rank local_rank within a group is the "ambassador" for group local_rank. */
+    int my_dest_group = local_rank % groups;
+
+    int intragroup_size = nodes_per_group * count_per_rank;
+    int intergroup_size = groups          * count_per_rank;
+
+    fftw_complex *phase1_out = fftw_malloc(intragroup_size * sizeof(fftw_complex));
+    fftw_complex *phase2_out = fftw_malloc(intergroup_size * sizeof(fftw_complex));
+    fftw_complex *phase2_in  = fftw_malloc(intergroup_size * sizeof(fftw_complex));
+
+    /* ----------------------------------------------------------------
+       Phase 1: intra-group all-to-all
+       Goal: rank local_rank r ends up holding all data that needs to
+       cross to group (r % groups). Each rank sends count_per_rank
+       elements to every peer in its group.
+    ---------------------------------------------------------------- */
+    {
+        MPI_Comm group_comm;
+        MPI_Comm_split(comm, my_group, local_rank, &group_comm);
+        MPI_Alltoall(in,         count_per_rank * 2, MPI_DOUBLE,
+                     phase1_out, count_per_rank * 2, MPI_DOUBLE,
+                     group_comm);
+        MPI_Comm_free(&group_comm);
+    }
+
+    /* Pack into phase2_in: collect the blocks from phase1_out that are
+       destined for each group g. After phase 1, slot i in phase1_out
+       came from local peer i within my_group. That peer originally held
+       data for global ranks across all groups. We want to forward to
+       group my_dest_group, so pack the block from each local peer i
+       that is destined for (my_dest_group * nodes_per_group + i).     */
+    for (int g = 0; g < groups; g++) {
+        /* For global link to group g, take the block from local peer
+           (g % nodes_per_group) — this is the intra-group slot that
+           holds data originally destined for group g.                 */
+        int local_slot = g % nodes_per_group;
+        memcpy(phase2_in + g * count_per_rank,
+               phase1_out + local_slot * count_per_rank,
+               count_per_rank * sizeof(fftw_complex));
+    }
+
+    /* ----------------------------------------------------------------
+       Phase 2: inter-group all-to-all
+       One rank per group exchanges across the single global link.
+       comm is split so that rank local_rank r talks to its counterpart
+       in every other group — this is the "ambassador" pattern.
+    ---------------------------------------------------------------- */
+    {
+        MPI_Comm intergroup_comm;
+        MPI_Comm_split(comm, local_rank, my_group, &intergroup_comm);
+        MPI_Alltoall(phase2_in,  count_per_rank * 2, MPI_DOUBLE,
+                     phase2_out, count_per_rank * 2, MPI_DOUBLE,
+                     intergroup_comm);
+        MPI_Comm_free(&intergroup_comm);
+    }
+
+    /* ----------------------------------------------------------------
+       Phase 3: intra-group all-to-all for final delivery
+       After phase 2, rank r in group g holds data from group r for all
+       local peers. Redistribute within group so each rank gets the
+       elements meant for it.
+    ---------------------------------------------------------------- */
+    {
+        MPI_Comm group_comm;
+        MPI_Comm_split(comm, my_group, local_rank, &group_comm);
+
+        fftw_complex *phase3_out = fftw_malloc(intragroup_size * sizeof(fftw_complex));
+        MPI_Alltoall(phase2_out, count_per_rank * 2, MPI_DOUBLE,
+                     phase3_out, count_per_rank * 2, MPI_DOUBLE,
+                     group_comm);
+        MPI_Comm_free(&group_comm);
+
+        /* Repack into output indexed by global rank:
+           slot i in phase3_out came from local peer i,
+           global rank = my_group * nodes_per_group + i              */
+        for (int i = 0; i < nodes_per_group; i++) {
+            int global_rank = my_group * nodes_per_group + i;
+            memcpy(out + global_rank * count_per_rank,
+                   phase3_out + i * count_per_rank,
+                   count_per_rank * sizeof(fftw_complex));
+        }
+
+        fftw_free(phase3_out);
+    }
+
+    fftw_free(phase1_out);
+    fftw_free(phase2_in);
+    fftw_free(phase2_out);
+}
+
 
 /* Topology selector - dispatches to appropriate implementation
  * Set TOPOLOGY_STRATEGY environment variable or detect from platform file
@@ -432,7 +598,7 @@ static TopologyType detect_topology()
     if (strcmp(topo_str, "recursive_doubling") == 0) return TOPOLOGY_RECURSIVE_DOUBLING;
     if (strcmp(topo_str, "ring") == 0) return TOPOLOGY_RING;
     if (strcmp(topo_str, "hypercube") == 0) return TOPOLOGY_HYPERCUBE;
-    if (strcmp(topo_str, "fattree") == 0) return TOPOLOGY_FATTREE;
+    if (strcmp(topo_str, "fat_tree") == 0) return TOPOLOGY_FATTREE;
     if (strcmp(topo_str, "torus") == 0) return TOPOLOGY_TORUS;
     if (strcmp(topo_str, "dragonfly") == 0) return TOPOLOGY_DRAGONFLY;
     
@@ -442,7 +608,7 @@ static TopologyType detect_topology()
 static void transpose_alltoall_3d_optimized(fftw_complex *in, fftw_complex *out,
                                              int local_slices, int N, int P,
                                              TopologyType topology,
-                                             MPI_Comm comm)
+                                             MPI_Comm comm, AlltoallTiming *timing)
 {
     int rank;
     MPI_Comm_rank(comm, &rank);
@@ -453,39 +619,39 @@ static void transpose_alltoall_3d_optimized(fftw_complex *in, fftw_complex *out,
     switch (topology) {
         case TOPOLOGY_NAIVE_STAGED:
             if (rank == 0) printf("[Naive Staged] Using completely unoptimized staged all-to-all (P sequential stages)\n");
-            alltoall_naive(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_naive(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         case TOPOLOGY_RECURSIVE_DOUBLING:
             if (rank == 0) printf("[Recursive Doubling] Using binary tree all-to-all (log P stages)\n");
-            alltoall_recursive_doubling(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_recursive_doubling(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         case TOPOLOGY_RING:
             if (rank == 0) printf("[Optimization] Using RING topology strategy\n");
-            alltoall_ring(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_ring(in, out, local_size, count_per_rank, P, rank, comm, timing);
             if(rank == 0){
             printf("Using RING topology strategy\n");
             }
             break;
         case TOPOLOGY_HYPERCUBE:
             if (rank == 0) printf("Using HYPERCUBE topology strategy increased latency but decreased traffic\n");
-            alltoall_hypercube(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_hypercube(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         case TOPOLOGY_FATTREE:
             if (rank == 0) printf("[Optimization] Using FAT-TREE topology strategy\n");
-            alltoall_fattree(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_fattree(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         case TOPOLOGY_TORUS:
             if (rank == 0) printf("[Optimization] Using TORUS topology strategy\n");
-            alltoall_torus(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_torus(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         // case TOPOLOGY_DRAGONFLY:
-        //     if (rank == 0) printf("[Optimization] Using DRAGONFLY topology strategy\n");
-        //     alltoall_dragonfly(in, out, local_size, count_per_rank, P, rank, comm);
-        //     break;
+            if (rank == 0) printf("[Optimization] Using DRAGONFLY topology strategy\n");
+            alltoall_dragonfly_indirect(in, out, local_size, count_per_rank, P, rank, comm);
+            break;
         case TOPOLOGY_NAIVE_MPI:
         default:
             if (rank == 0) printf("[Optimized Library] Using standard MPI_Alltoall (library-optimized)\n");
-            transpose_alltoall_3d(in, out, local_slices, N, P, comm);
+            transpose_alltoall_3d(in, out, local_slices, N, P, comm, timing);
             break;
     }
 }
@@ -589,8 +755,10 @@ int main(int argc, char **argv)
 
     fftw_complex *recvd = (fftw_complex *)fftw_malloc(local_size);
     MPI_Barrier(MPI_COMM_WORLD);
+    
+    AlltoallTiming alltoall_timing = {0.0, 0.0};
     double t_comm_start = MPI_Wtime();
-    transpose_alltoall_3d_optimized(data_t, recvd, local_slices, N, P, topology, MPI_COMM_WORLD);
+    transpose_alltoall_3d_optimized(data_t, recvd, local_slices, N, P, topology, MPI_COMM_WORLD, &alltoall_timing);
     comm_time += MPI_Wtime() - t_comm_start;
     #ifdef DEBUG
     printf("All-to-all transpose done on rank %d, now doing FFT along x for transposed slices...\n", rank);
@@ -640,7 +808,9 @@ int main(int argc, char **argv)
         printf("N=%d (N³=%d), P=%d\n", N, N*N*N, P);
         printf("Total time: %.6f s\n", t_end - t_start);
         printf("FFT compute time: %.6f s\n", fft_time);
-        printf("Alltoall comm: %.6f s\n", comm_time);
+        printf("Alltoall comm (total): %.6f s\n", comm_time);
+        printf("  - MPI call time: %.6f s\n", alltoall_timing.mpi_time);
+        printf("  - Memcpy time: %.6f s\n", alltoall_timing.memcpy_time);
         printf("Internal transpose time: %.6f s\n", intl_transpose_time);
         // printf("RMS magnitude: %.6e\n", rms_magnitude);
 }
