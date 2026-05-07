@@ -30,12 +30,12 @@ RUN_BENCH="$SCRIPT_DIR/run_benchmarks.sh"
 BIN_DIR="bin/3d_stencil"
 
 STENCIL_BINS=(
-    "3d_stencil_baseline"
-    "3d_stencil_torus"
-    "3d_stencil_hypercube"
-    "3d_stencil_dragonfly"
-    "3d_stencil_fat_tree"
-    "3d_stencil_ring"
+    "3d_stencil_agnostic_no_reorder"
+    # "3d_stencil_torus"
+    # "3d_stencil_hypercube"
+    # "3d_stencil_dragonfly"
+    # "3d_stencil_fat_tree"
+    # "3d_stencil_ring"
 )
 
 NP_LIST=(16 32 64 128 256)
