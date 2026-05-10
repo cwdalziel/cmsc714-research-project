@@ -606,7 +606,7 @@ static void alltoall_torus(fftw_complex *in, fftw_complex *out,
 
 static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
                                         int local_size, int count_per_rank, int P, int rank,
-                                        MPI_Comm comm)
+                                        MPI_Comm comm, AlltoallTiming *timing)
 {
     int groups = (int)(sqrt((double)P) + 0.5);
     if (groups <= 0 || (groups * groups) != P) {
@@ -626,7 +626,7 @@ static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
 
     int my_group   = rank / nodes_per_group;
     int local_rank = rank % nodes_per_group;
-
+    double mpi_start;
     /* Each rank is responsible for forwarding data to one destination group.
        Rank local_rank within a group is the "ambassador" for group local_rank. */
     int intragroup_size = nodes_per_group * count_per_rank;
@@ -642,13 +642,15 @@ static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
        cross to group (r % groups). Each rank sends count_per_rank
        elements to every peer in its group.
     ---------------------------------------------------------------- */
-    {
+    {   mpi_start = MPI_Wtime();
         MPI_Comm group_comm;
         MPI_Comm_split(comm, my_group, local_rank, &group_comm);
         MPI_Alltoall(in,         count_per_rank * 2, MPI_DOUBLE,
                      phase1_out, count_per_rank * 2, MPI_DOUBLE,
                      group_comm);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         MPI_Comm_free(&group_comm);
+        
     }
 
     /* Pack into phase2_in: collect the blocks from phase1_out that are
@@ -673,13 +675,16 @@ static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
        comm is split so that rank local_rank r talks to its counterpart
        in every other group — this is the "ambassador" pattern.
     ---------------------------------------------------------------- */
-    {
+    {   
+        mpi_start = MPI_Wtime();
         MPI_Comm intergroup_comm;
         MPI_Comm_split(comm, local_rank, my_group, &intergroup_comm);
         MPI_Alltoall(phase2_in,  count_per_rank * 2, MPI_DOUBLE,
                      phase2_out, count_per_rank * 2, MPI_DOUBLE,
                      intergroup_comm);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         MPI_Comm_free(&intergroup_comm);
+        
     }
 
     /* ----------------------------------------------------------------
@@ -688,7 +693,7 @@ static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
        local peers. Redistribute within group so each rank gets the
        elements meant for it.
     ---------------------------------------------------------------- */
-    {
+    {   mpi_start = MPI_Wtime();
         MPI_Comm group_comm;
         MPI_Comm_split(comm, my_group, local_rank, &group_comm);
 
@@ -696,6 +701,7 @@ static void alltoall_dragonfly_indirect(fftw_complex *in, fftw_complex *out,
         MPI_Alltoall(phase2_out, count_per_rank * 2, MPI_DOUBLE,
                      phase3_out, count_per_rank * 2, MPI_DOUBLE,
                      group_comm);
+        timing->mpi_time += MPI_Wtime() - mpi_start;
         MPI_Comm_free(&group_comm);
 
         /* Repack into output indexed by global rank:
@@ -788,7 +794,7 @@ static void transpose_alltoall_3d_optimized(fftw_complex *in, fftw_complex *out,
             break;
         case TOPOLOGY_DRAGONFLY:
             if (rank == 0) printf("[Optimization] Using DRAGONFLY topology strategy\n");
-            alltoall_dragonfly_indirect(in, out, local_size, count_per_rank, P, rank, comm);
+            alltoall_dragonfly_indirect(in, out, local_size, count_per_rank, P, rank, comm, timing);
             break;
         case TOPOLOGY_NAIVE_MPI:
         default:
