@@ -52,6 +52,8 @@ static void print_usage(const char* prog) {
       "  --per-rank-N=N   N keys per rank (TOTAL_N = N * num_ranks).\n"
       "  --seed=S         RNG seed (default 0 = rank-derived).\n"
       "  --verify         Verify globally sorted (slow; for dev).\n"
+      "  --chunks=K       Number of alltoallv sub-rounds (default 4; K>=1).\n"
+      "                   Splits each per-(src,dst) chunk into K contiguous pieces.\n"
       "  -h, --help       Print this help and exit.\n";
 }
 
@@ -73,6 +75,7 @@ int main(int argc, char* argv[]) {
     uint64_t  seed       = 0;
     bool      verify     = false;
     bool      saw_pos_N  = false;
+    int       chunks     = 4;            // sweep parameter; default keeps prior behavior
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -87,6 +90,8 @@ int main(int argc, char* argv[]) {
             seed = std::strtoull(val.c_str(), nullptr, 10);
         } else if (a == "--verify") {
             verify = true;
+        } else if (starts_with(a, "--chunks=", val)) {
+            chunks = std::atoi(val.c_str());
         } else if (!a.empty() && a[0] != '-') {
             total_N = std::atoll(a.c_str());
             saw_pos_N = true;
@@ -103,6 +108,10 @@ int main(int argc, char* argv[]) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     if (per_rank_N > 0) total_N = per_rank_N * p;
+    if (chunks < 1) {
+        if (rank == 0) std::cerr << "Error: --chunks=" << chunks << " must be >= 1.\n";
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
     if (total_N <= 0 || total_N % p != 0) {
         if (rank == 0)
             std::cerr << "Error: total_N (" << total_N << ") must be positive and divisible by ranks ("
@@ -194,22 +203,21 @@ int main(int argc, char* argv[]) {
     std::vector<Key> received(static_cast<size_t>(recv_total));
 
     // ----- Chunked alltoallv -----
-    // Split each per-(src,dst) chunk into CHUNKS contiguous sub-chunks.
-    // Run CHUNKS smaller MPI_Alltoallv rounds. Smaller in-flight buffers
-    // reduce link saturation; the cumulative result is identical to one
-    // big MPI_Alltoallv. CHUNKS=4 is a reasonable starting point — tune
-    // (env-var override would also be reasonable) once you measure.
-    const int CHUNKS = 4;
+    // Split each per-(src,dst) chunk into `chunks` contiguous sub-chunks (k).
+    // Run k smaller MPI_Alltoallv rounds. Smaller in-flight buffers reduce
+    // link saturation; the cumulative result is identical to one big
+    // MPI_Alltoallv. Default k=4 (no flag = byte-identical to original runs);
+    // overridable via --chunks=K for the chunk-count sweep.
     std::vector<int> ck_sc(p), ck_sd(p), ck_rc(p), ck_rd(p);
-    for (int c = 0; c < CHUNKS; c++) {
+    for (int c = 0; c < chunks; c++) {
         for (int i = 0; i < p; i++) {
-            int s_start = static_cast<int>(static_cast<long long>(send_counts[i]) * c / CHUNKS);
-            int s_end   = static_cast<int>(static_cast<long long>(send_counts[i]) * (c + 1) / CHUNKS);
+            int s_start = static_cast<int>(static_cast<long long>(send_counts[i]) * c / chunks);
+            int s_end   = static_cast<int>(static_cast<long long>(send_counts[i]) * (c + 1) / chunks);
             ck_sc[i] = s_end - s_start;
             ck_sd[i] = send_displs[i] + s_start;
 
-            int r_start = static_cast<int>(static_cast<long long>(recv_counts[i]) * c / CHUNKS);
-            int r_end   = static_cast<int>(static_cast<long long>(recv_counts[i]) * (c + 1) / CHUNKS);
+            int r_start = static_cast<int>(static_cast<long long>(recv_counts[i]) * c / chunks);
+            int r_end   = static_cast<int>(static_cast<long long>(recv_counts[i]) * (c + 1) / chunks);
             ck_rc[i] = r_end - r_start;
             ck_rd[i] = recv_displs[i] + r_start;
         }

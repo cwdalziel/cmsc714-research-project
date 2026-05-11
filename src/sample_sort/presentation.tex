@@ -1,0 +1,220 @@
+% Topology-Aware Sample Sort — presentation slot for CMSC 714 group project.
+% Compile via:
+%   docker run --rm -v "$PWD:/work" -w /work/src/sample_sort \
+%       texlive/texlive:latest pdflatex -interaction=nonstopmode presentation.tex
+
+\documentclass[10pt, aspectratio=169]{beamer}
+\usetheme{Madrid}
+\usecolortheme{whale}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{tikz}
+
+\graphicspath{{../../results/plots/}}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+\definecolor{accentgreen}{HTML}{2ECC71}
+\definecolor{accentred}{HTML}{E74C3C}
+\definecolor{accentblue}{HTML}{3498DB}
+
+\title[Topology-Aware Sample Sort]{Topology-Aware Sample Sort}
+\subtitle{CMSC 714 Project --- The bisection-bandwidth axis of the topology study}
+\author{Sonok Mahapatra}
+\institute[UMD]{Group: J. LaGattuta, C. Dalziel, M. Wijitharathna, S. Mahapatra}
+\date{Spring 2026}
+
+\begin{document}
+
+% ----------------------------------------------------------------------
+\frame{\titlepage}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Project Context}
+\textbf{Group study:} how do four MPI workloads perform on five simulated
+network topologies? Built under SimGrid 4.1 SMPI; topology defined by XML.
+
+\vspace{0.5em}
+\begin{columns}[T]
+\column{0.5\linewidth}
+\textbf{Workloads}
+\begin{itemize}
+    \item 3D stencil
+    \item 3D FFT
+    \item Barnes--Hut N-body
+    \item \textcolor{accentblue}{\textbf{Sample sort (mine)}}
+\end{itemize}
+
+\column{0.5\linewidth}
+\textbf{Topologies}
+\begin{itemize}
+    \item ring
+    \item 3D torus
+    \item hypercube
+    \item fat tree
+    \item dragonfly
+\end{itemize}
+\end{columns}
+
+\vspace{0.8em}
+\textbf{This slot:} the sample-sort row of the matrix.
+Sample sort is fundamentally a giant \emph{all-to-all} workload, so it
+exercises the network's \alert{bisection-bandwidth axis} more than any
+other algorithm in the study.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Sample Sort (PSRS) --- 8 Steps, 1 Bottleneck}
+\begin{enumerate}
+    \itemsep0.15em
+    \item Local sort ($N/p$ keys per rank).
+    \item Pick $p-1$ regular samples per rank.
+    \item \texttt{MPI\_Allgather} samples (every rank holds $p \cdot (p-1)$ samples).
+    \item Sort gathered samples; pick $p-1$ global splitters.
+    \item Partition local data by splitters $\to$ \texttt{send\_counts[p]}.
+    \item \texttt{MPI\_Alltoall} to exchange the counts.
+    \item \alert{\textbf{\texttt{MPI\_Alltoallv}} to redistribute data $\leftarrow$ topology-sensitive}.
+    \item Local sort of received bucket.
+\end{enumerate}
+
+\vspace{0.5em}
+\textbf{Why this is a topology test.} Step 7 is one global all-to-all over
+$\sim$8\,MB-per-rank. Bisection bandwidth ($O(1)$ on ring, $O(p)$ on fat
+tree) sets a hard ceiling on how fast it can possibly run.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Agnostic Baseline --- Strong Scaling (TOTAL\_N=16M)}
+\centering
+\includegraphics[width=0.78\linewidth]{agnostic_strong_scaling.png}
+
+\vspace{0.3em}
+\small
+\textbf{Ring catastrophe} at np=256: $0.083\,$s vs.\ $\sim 0.005\,$s for the
+others (\textcolor{accentred}{\textbf{10--20$\times$ gap}}). Predicted by
+bisection theory and observed exactly.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Agnostic Baseline --- Weak Scaling (1M keys/rank)}
+\centering
+\includegraphics[width=0.78\linewidth]{agnostic_weak_scaling.png}
+
+\vspace{0.3em}
+\small
+Two surprises here. \textbf{(1)} Strong scaling regresses past np=128 across
+all topologies --- $O(p^2)$ message-pair latency dominates. \textbf{(2)} At
+np=256 \emph{weak}, fat tree is ~$0.149\,$s (almost as slow as ring) ---
+\alert{contradicts the simple ``fat tree always wins all-to-all'' intuition}.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Topology-Aware Variants --- One Per Topology}
+Step 7 was replaced with a topology-aware redistribution in 5 separate binaries:
+
+\vspace{0.5em}
+\begin{table}
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Variant} & \textbf{Step 7 algorithm} \\
+\midrule
+\texttt{ring} & $p-1$ pairwise \texttt{MPI\_Sendrecv}s at distances $1..p-1$ \\
+\texttt{torus} & 2-phase row $\to$ column \texttt{Alltoallv} on Cartesian sub-comms \\
+\texttt{hypercube} & $\log_2 p$ rounds of recursive halving with per-bucket forwarding \\
+\texttt{fat\_tree} & Chunked \texttt{Alltoallv} (4 sub-rounds, smaller in-flight buffers) \\
+\texttt{dragonfly} & 2-phase intra-group $\to$ inter-group \texttt{Alltoallv} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.6em}
+All 5 variants pass \texttt{--verify} on np $\in \{16,32,64,128,256\}$.
+
+\vspace{0.5em}
+\textbf{Full grid:} 6 binaries (5 optimized + agnostic) $\times$ 5 topology
+XMLs $\times$ 5 np $\times$ 2 modes = \textbf{300 \texttt{smpirun} runs}.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Optimization Results --- Diagonal Speedup, Weak np=256}
+\centering
+\includegraphics[width=0.72\linewidth]{diagonal_speedup_weak_np256.png}
+
+\vspace{0.2em}
+\small
+\textbf{The story:} only \textcolor{accentgreen}{fat\_tree-opt} and
+\textcolor{accentgreen}{ring-opt} actually help. \textcolor{accentred}{torus-opt}
+is \emph{14$\times$ slower} than agnostic on its own topology.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Optimization Results --- Full 6$\times$5 Grid (Weak np=256)}
+\centering
+\includegraphics[width=0.78\linewidth]{grid_weak_np256.png}
+
+\vspace{0.1em}
+\small
+Red boxes = matching topology (the diagonal). \textbf{Best per column} isn't
+always the matching variant: e.g.\ on \emph{torus}, \texttt{dragonfly-opt}
+wins ($0.027\,$s) over \texttt{torus-opt} ($0.342\,$s).
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Three Findings}
+\textbf{A. Fat-tree chunking solved the np=256 weak surprise.}\\
+\quad The mystery slow-down had a measurable cause (in-flight buffer pressure
+on the simulated links). Splitting the all-to-all into 4 sub-rounds dropped
+it from $0.149\,$s to $0.028\,$s --- \textcolor{accentgreen}{\textbf{5.27$\times$ speedup}}.
+
+\vspace{0.6em}
+\textbf{B. Naive 2-phase decomposition is a trap.}\\
+\quad The textbook ``row $\to$ column on a 2D grid'' optimization (\texttt{torus-opt})
+is \textcolor{accentred}{\textbf{14$\times$ slower}} than agnostic at strong np=256.
+SMPI's default \texttt{coll-selector:ompi} is already smart; the explicit
+sub-comm setup + double-packing overhead dwarfs the savings.
+
+\vspace{0.6em}
+\textbf{C. Algorithmic simplicity beats topology-matching.}\\
+\quad Fewer rounds wins, even on the ``wrong'' topology.
+\texttt{hypercube-opt} on a \emph{ring} (strong np=256) is $0.055\,$s vs.\
+agnostic $0.083\,$s --- 1.5$\times$ faster on a topology it wasn't
+designed for.
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Conclusion}
+\textbf{For the team's broader question} (which topologies suit which algorithms?):
+\begin{itemize}
+    \item Sample sort cleanly exposes the \alert{bisection-bandwidth axis}: the agnostic ranking (\texttt{fat\_tree} $\approx$ \texttt{hypercube} $\approx$ \texttt{dragonfly} $\ll$ \texttt{torus} $\ll$ \texttt{ring}) is the answer for an algorithm dominated by global all-to-all.
+    \item Topology-matched code mostly \emph{preserves} that ranking; it does not unlock dramatically new ones.
+\end{itemize}
+
+\vspace{0.7em}
+\textbf{The nuanced result of this slice:}
+\begin{quote}
+\itshape
+Topology-aware code only wins when it targets a specific measured
+bottleneck --- not when it merely ``matches'' the network structurally.
+\end{quote}
+
+\vspace{0.5em}
+That is more honest than ``topology-aware is always better'' and more useful
+than ``topology-aware never helps.''
+\end{frame}
+
+% ----------------------------------------------------------------------
+\begin{frame}{Backup --- Per-topology Comparison}
+\centering
+\includegraphics[width=0.95\linewidth]{per_topology_weak.png}
+
+\vspace{0.2em}
+\small Agnostic (black, circles) vs.\ matching-topology optimization (red,
+squares) across all np, weak scaling. Fat tree is the only big visible win.
+\end{frame}
+
+\end{document}

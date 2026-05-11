@@ -4,6 +4,7 @@ results
 .cursor
 .DS_Store
 .claude/
+CLAUDE.md
 *.aux
 *.fdb_latexmk
 *.fls
